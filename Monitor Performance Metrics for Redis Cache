@@ -1,0 +1,289 @@
+#Connect-AzAccount
+
+$storageAccSubid = "2def5af2-7dd0-41bc-8ae2-3424c1e3f64f"
+$resourceGroupName = "az-rg-test-001" 
+$storageAccName = "Storage_Name"   
+$storageContainerName = "finops"
+
+# Function to upload blob contents  
+Function UploadBlobContent {   
+    ## Get the storage account  
+    $storageAcc = Get-AzStorageAccount -ResourceGroupName $resourceGroupName -Name $storageAccName      
+    ## Get the storage account context  
+    $ctx = $storageAcc.Context    
+    ## Upload a file  
+    Set-AzStorageBlobContent -Container $storageContainerName -File $filePath -Blob $fileName -Context $ctx -Force    
+}
+
+$fileName = "CacheRedis_Inventory_Metrics.xlsx"
+$filePath = ".\$fileName"
+
+# Connect to Azure with system-assigned managed identity
+Connect-AzAccount -Identity -WarningAction Ignore
+
+$DebugPreference = 'SilentlyContinue'
+$redisobj = @()
+$endtimestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssK")
+$starttimestamp = (Get-Date).ToUniversalTime().AddDays(-1).ToString("yyyy-MM-ddTHH:mm:ssK")
+#$subscriptions = Get-AzSubscription
+    #foreach ($sub in $subscriptions)
+        #{
+            #Set-AzContext -Subscription $sub
+            $rediscaches = Get-AzRedisCache
+            #$alltag = Get-AzTag -ResourceId $rediscaches.Id
+            #$Tags = $alltag.Properties.TagsProperty
+            #$EnvTag = $null
+            #$Key = $Tags.Keys
+            #$Value = $Tags.Values
+            #{
+            foreach($rediscache in $rediscaches)
+            {
+            $alltag = Get-AzTag -ResourceId $rediscache.Id
+            $Tags = $alltag.Properties.TagsProperty
+            #$EnvTag = $null
+            $Key = $Tags.Keys
+            $Value = $Tags.Values
+            $EnvTag = $null
+            if (($Key -contains "Environment") -and ($Value -contains "Dev")) 
+                {
+                    $EnvTag = "Dev"
+                }
+             elseif (($Key -contains "Environment") -and ($Value -contains "Test")) 
+                {
+                    $EnvTag = "Test"
+                }
+             elseif (($Key -contains "Environment") -and ($Value -contains "QA")) {
+                    $EnvTag = "QA"
+                }
+             else 
+                {
+                    $EnvTag = "Prod"
+                }
+
+################################## Capturing Matrics Data foreach Redis Cache ######################################################################
+
+            $serverloadmetrics = (Get-AzMetric -ResourceId $rediscache.Id -TimeGrain 00:01:00 -AggregationType Maximum -StartTime $starttimestamp -EndTime $endtimestamp -MetricName "serverLoad" -DetailedOutput -Top 1).Data | Sort-Object Maximum -Descending | Select-Object -Property TimeStamp, Maximum -First 1 -WarningAction SilentlyContinue
+            $cpupercentage = (Get-AzMetric -ResourceId $rediscache.Id -TimeGrain 00:01:00 -AggregationType Maximum -StartTime $starttimestamp -EndTime $endtimestamp -MetricName "percentProcessorTime" -DetailedOutput -Top 1).Data | Sort-Object Maximum -Descending | Select-Object -Property TimeStamp, Maximum -First 1 -WarningAction SilentlyContinue
+            $connectedclients = (Get-AzMetric -ResourceId $rediscache.Id -TimeGrain 00:01:00 -AggregationType Maximum -StartTime $starttimestamp -EndTime $endtimestamp -MetricName "connectedclients" -DetailedOutput -Top 1).Data | Sort-Object Maximum -Descending | Select-Object -Property TimeStamp, Maximum -First 1 -WarningAction SilentlyContinue
+            $usedmemory = (Get-AzMetric -ResourceId $rediscache.Id -TimeGrain 00:01:00 -AggregationType Maximum -StartTime $starttimestamp -EndTime $endtimestamp -MetricName "usedmemory" -DetailedOutput -Top 1).Data | Sort-Object Maximum -Descending | Select-Object -Property TimeStamp, Maximum -First 1 -WarningAction SilentlyContinue
+            $cacheread = (Get-AzMetric -ResourceId $rediscache.Id -TimeGrain 00:01:00 -AggregationType Maximum -StartTime $starttimestamp -EndTime $endtimestamp -MetricName "cacheRead" -DetailedOutput -Top 1).Data | Sort-Object Maximum -Descending | Select-Object -Property TimeStamp, Maximum -First 1 -WarningAction SilentlyContinue
+            $cachewrite = (Get-AzMetric -ResourceId $rediscache.Id -TimeGrain 00:01:00 -AggregationType Maximum -StartTime $starttimestamp -EndTime $endtimestamp -MetricName "cacheWrite" -DetailedOutput -Top 1).Data | Sort-Object Maximum -Descending | Select-Object -Property TimeStamp, Maximum -First 1 -WarningAction SilentlyContinue
+            $tags = (Get-AzTag)
+            
+##################################### Condition For standard SKU #################################################################################
+
+if(($rediscache.Sku -match "Standard") -and ($rediscache.Size -eq 53) -and ($EnvTag -ne "Prod" -or $resourcegroup -inotcontains "prod") -and ($serverloadmetrics.Maximum -le 60))
+                    {
+                        if(($usedmemory.Maximum/1GB -le 20.0) -and ($usedmemory.Maximum/1GB -ge 15.0))
+                            
+                            {
+                                $recommendation = "Scale down the Sku"
+                            }
+
+                        elseif(($connectedclients.Maximum -ge 7500) -and ($connectedclients.Maximum -le 9000)) 
+
+                            {
+                                $recommendation = "Scale down the sku"
+                            }
+
+                        else
+                            {
+                               $recommendation = "Scaling either is not required or needs to be upgraded - No Recommendation"
+                            }
+                       }
+                      
+elseif(($rediscache.Sku -match "Standard") -and ($rediscache.Size -eq 26) -and ($EnvTag -ne "Prod" -or $resourcegroup -inotcontains "prod") -and ($serverloadmetrics.Maximum -le 60))
+                     {
+                            
+                           if(($usedmemory.Maximum/1GB -le 10.0) -and ($usedmemory.Maximum/1GB -ge 9.0))
+                            {
+                                $recommendation = "Scale down the Sku"
+                            }
+
+                           elseif(($connectedclients.Maximum -ge 3000) -and ($connectedclients.Maximum -le 4000))
+
+                            {
+                                $recommendation = "Scale down the sku"
+                            }
+
+                           else
+                            {
+                                $recommendation = "Scaling either is not required or needs to be upgraded - No Recommendation"
+                            }
+                        }
+elseif(($rediscache.Sku -match "Standard") -and ($rediscache.Size -eq 13) -and ($EnvTag -ne "Prod" -or $resourcegroup -inotcontains "prod") -and ($serverloadmetrics.Maximum -le 45))
+                     {  
+                            
+                           if(($usedmemory.Maximum/1GB -le 5) -and ($usedmemory.Maximum/1GB -ge 4))
+                            {
+                                $recommendation = "Scale down the Sku"
+                            }
+
+                           elseif(($connectedclients.Maximum -ge 1000) -and ($connectedclients.Maximum -le 1500))
+
+                            {
+                                $recommendation = "Scale down the sku"
+                            }
+
+                           else
+                            {
+                                $recommendation = "Scaling either is not required or needs to be upgraded - No Recommendation"
+                            }
+                         }
+elseif(($rediscache.Sku -match "Standard") -and ($rediscache.Size -eq 6) -and ($EnvTag -ne "Prod" -or $resourcegroup -inotcontains "prod") -and ($serverloadmetrics.Maximum -le 60))
+
+                        {
+                            
+                           if(($usedmemory.Maximum/1GB -le 2.0) -or ($usedmemory.Maximum/1GB -ge 1.5))
+                            {
+                                $recommendation = "Scale down the Sku"
+                            }
+
+                           elseif(($connectedclients.Maximum -ge 1000) -and ($connectedclients.Maximum -le 1500))
+
+                            {
+                                $recommendation = "Scale down the sku"
+                            }
+
+                           else
+                            {
+                                $recommendation = "Scaling either is not required or needs to be upgraded - No Recommendation"
+                            }
+                         }
+
+
+################################################## Condition for Premium SKU #####################################################
+
+elseif(($rediscache.Sku -match "Premium" -or $rediscache.Size -eq "P5") -and ($EnvTag -ne "Prod" -or $resourcegroup -inotcontains "prod") -and ($serverloadmetrics.Maximum -le 85))
+
+                        {
+                            
+                           if($usedmemory.Maximum/1GB -le 100)
+                            {
+                                $recommendation = "Scale down the Sku, Also Check the shard Count"
+                            }
+
+                           elseif(($connectedclients.Maximum -ge 38000) -and ($connectedclients.Maximum -le 39000))
+
+                            {
+                                $recommendation = "Scale down the Sku, Also Check the shard Count"
+                            }
+
+                           else
+                            {
+                                $recommendation = "Check for Shard Count and scale accordingly"
+                            }
+                        }
+
+elseif(($rediscache.Sku -match "Premium") -and ($rediscache.Size -eq "P4") -and ($EnvTag -ne "Prod" -or $resourcegroup -inotcontains "prod") -and ($serverloadmetrics.Maximum -le 85))
+
+                        {
+                            
+                           if(($usedmemory.Maximum/1GB -ge 45) -and ($usedmemory.Maximum/1GB -le 50))
+                            {
+                                $recommendation = "Scale down the Sku, Also Check the shard Count"
+                            }
+
+                           elseif(($connectedclients.Maximum -ge 38000) -and ($connectedclients.Maximum -le 39000))
+
+                            {
+                                $recommendation = "Scale down the Sku, Also Check the shard Count"
+                            }
+
+                           else
+                            {
+                                $recommendation = "Check for Shard Count and scale accordingly"
+                            }
+                        }
+
+elseif(($rediscache.Sku -match "Premium") -and ($rediscache.Size -eq "P3") -and ($EnvTag -ne "Prod" -or $resourcegroup -inotcontains "prod") -and ($serverloadmetrics.Maximum -le 85))
+
+                        {
+                            
+                           if(($usedmemory.Maximum/1GB -ge 20) -and ($usedmemory.Maximum/1GB -le 23))
+                            {
+                                $recommendation = "Scale down the Sku, Also Check the shard Count"
+                            }
+
+                           elseif(($connectedclients.Maximum -ge 27000) -and ($connectedclients.Maximum -le 29000))
+
+                            {
+                                $recommendation = "Scale down the Sku, Also Check the shard Count"
+                            }
+
+                           else
+                            {
+                                $recommendation = "Check for Shard Count and scale accordingly"
+                            }
+                        }
+
+elseif(($rediscache.Sku -match "Premium") -and ($rediscache.Size -eq "P2") -and ($EnvTag -ne "Prod" -or $resourcegroup -inotcontains "prod") -and ($serverloadmetrics.Maximum -le 85))
+
+                        {
+                            
+                           if(($usedmemory.Maximum/1GB -ge 10) -and ($usedmemory.Maximum/1GB -le 11))
+                            {
+                                $recommendation = "Scale down the Sku, Also Check the shard Count"
+                            }
+
+                           elseif(($connectedclients.Maximum -ge 13000) -and ($connectedclients.Maximum -le 14000))
+
+                            {
+                                $recommendation = "Scale down the Sku, Also Check the shard Count"
+                            }
+
+                           else
+                            {
+                                $recommendation = "Check for Shard Count and scale accordingly"
+                            }
+                        }
+
+
+else
+        {
+        $recommendation = "One or more Metrics Parameter is reaching the threshold limit. Hence, Monitor and Upgrade the Redis Cache accordingly" 
+        }
+
+
+       #{
+################################################# Capturing all data into custom Object ##############################################################
+                    $redisinfo = [pscustomobject]@{
+                    'RC Name' = $rediscache.Name
+                    'RC HostName' = $rediscache.HostName
+                    'Resource Group Name' = $rediscache.ResourceGroupName
+                    'Size' = $rediscache.Size
+                    'SKU' = $rediscache.Sku
+                    'Shard Count' = $rediscache.ShardCount
+                    'Environment' = $EnvTag
+                    'Zone' = $rediscache.Zone
+                    'SL Timestamp' = $serverloadmetrics.TimeStamp
+                    'Maximum Server Load in Percentage' = $serverloadmetrics.Maximum
+                    'CPU Timestamp' = $cpupercentage.TimeStamp
+                    'CPU in Percentage'= $cpupercentage.Maximum
+                    'CC TimeStamp' = $connectedclients.TimeStamp
+                    'Connected Clients Count' =$connectedclients.Maximum
+                    'Used Memory Time' = $usedmemory.TimeStamp
+                    'Used Memory in GB' = $usedmemory.Maximum/1GB
+                    'Cache Read TimeStamp' = $cacheread.TimeStamp
+                    'Cache Read in Kbps' = $cacheread.Maximum/1024
+                    'Cache Write TimeStamp' = $cachewrite.TimeStamp
+                    'Cache Write in Kbps' = $cachewrite.Maximum/1024
+                    'Advice' = $recommendation
+                    'Cost Saving' = $costsaving
+                    'Action' = "True/False User Input into Excel Sheet"
+                    'Desired Sku' = "User Input into Excel Sheet"
+                    'Desired Size' = "User Input into Excel Sheet"
+                    'Post Remediation' = ""
+                  }
+            $redisobj += $redisinfo
+        }
+        
+$redisobj | Export-Excel -Path $filePath
+Write-Output "All Redis Resource writing to excel file"
+
+# Write output to a blob in SA
+Select-AzSubscription -SubscriptionId $storageAccSubid | Out-null
+Write-Output "Uploading Content to Blob Container"
+UploadBlobContent
+
+Write-Output "Finished!"
